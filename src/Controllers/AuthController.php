@@ -67,8 +67,10 @@ class AuthController extends Controller
         $state = $request->input('state');
         if (empty($state) || ! KeycloakWeb::validateState($state)) {
             KeycloakWeb::forgetState();
+            logger()->error("AuthController.php:71 - Invalid state ". json_encode($request->all()));
+            return redirect('/');
 
-            throw new KeycloakCallbackException('Invalid state');
+            //throw new KeycloakCallbackException('Invalid state');
         }
 
         // Change code for token
