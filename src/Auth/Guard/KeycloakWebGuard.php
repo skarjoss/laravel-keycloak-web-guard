@@ -42,10 +42,15 @@ class KeycloakWebGuard implements Guard
     {
         return (bool) $this->user();
     }
-    
+
+    /**
+     * Determine if the guard has a user instance.
+     *
+     * @return bool
+     */
     public function hasUser()
     {
-        return (bool) $this->user();
+        return ! is_null($this->user);
     }
 
     /**
