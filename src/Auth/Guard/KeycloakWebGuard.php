@@ -100,6 +100,45 @@ class KeycloakWebGuard implements Guard
     }
 
     /**
+     * Set the current user.
+     *
+     * Required by Auth::login($user) so the guard behaves like any other
+     * Laravel guard.
+     *
+     * @param  \Illuminate\Contracts\Auth\Authenticatable  $user
+     * @return void
+     */
+    public function login(Authenticatable $user, $remember = false)
+    {
+        $this->setUser($user);
+    }
+
+    /**
+     * Log the user out of the application.
+     *
+     * Required by Auth::logout(). Before this method existed, any call to
+     * Auth::logout() (exception handler, Voyager, custom code) ended in
+     * "Call to undefined method KeycloakWebGuard::logout()".
+     *
+     * @return void
+     */
+    public function logout()
+    {
+        KeycloakWeb::forgetToken();
+
+        try {
+            if ($this->request && $this->request->hasSession()) {
+                $this->request->session()->invalidate();
+                $this->request->session()->regenerateToken();
+            }
+        } catch (\Throwable $e) {
+            // No session available (console, stateless request...)
+        }
+
+        $this->user = null;
+    }
+
+    /**
      * Validate a user's credentials.
      *
      * @param  array  $credentials

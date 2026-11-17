@@ -100,7 +100,89 @@ We can cache the OpenId Configuration: it's a list of endpoints we require to Ke
 
 If you activate it, *remember to flush the cache* when change the realm or url.
 
-Just add the options you would like as an array to the" to "Just add the options you would like to guzzle_options array on keycloak-web.php config file. For example:
+Just add the options you would like to `guzzle_options` array on `keycloak-web.php` config file.
+
+### HTTP timeouts and retries
+
+A client without timeouts is dangerous: a hung connection to the identity
+provider blocks a PHP-FPM worker until the process is killed, and a few of them
+can exhaust the pool and take the whole application down.
+
+Safe values are applied by default and can be tuned:
+
+```php
+'http' => [
+    'timeout' => env('KEYCLOAK_HTTP_TIMEOUT', 5),
+    'connect_timeout' => env('KEYCLOAK_HTTP_CONNECT_TIMEOUT', 3),
+    'retries' => env('KEYCLOAK_HTTP_RETRIES', 2),
+    'retry_delay_ms' => env('KEYCLOAK_HTTP_RETRY_DELAY_MS', 200),
+],
+```
+
+Retries only apply to `GET` requests (discovery, userinfo). Requests to the
+token endpoint are never replayed because authorization codes and refresh
+tokens are single use.
+
+### Session behaviour
+
+*  `KEYCLOAK_LEEWAY` (default `60`)
+
+Clock skew tolerance in seconds. The access token is refreshed slightly before
+it expires and ID tokens are accepted for a few extra seconds.
+
+*  `KEYCLOAK_PROFILE_CACHE_TTL` (default `300`)
+
+Seconds the user profile is cached in the session. Without it the guard calls
+the `userinfo` endpoint (and the user provider) on **every request**. Set `0` to
+disable the cache.
+
+*  `KEYCLOAK_PROFILE_STALE_TTL` (default `900`)
+
+Extra seconds the cached profile is still accepted when Keycloak cannot be
+reached, so a network hiccup does not log your users out.
+
+*  `KEYCLOAK_STATE_TTL` (default `600`) and `KEYCLOAK_MAX_STATES` (default `5`)
+
+How long an authorization state is valid and how many concurrent states are
+kept in the session. This makes multiple tabs work and stops the
+"Invalid state" errors when an old login URL is replayed.
+
+*  `KEYCLOAK_MAX_STATE_FAILURES` (default `3`)
+
+Consecutive failed state validations before the user is sent to
+`KEYCLOAK_FAILURE_REDIRECT` instead of bouncing between the application and the
+identity provider.
+
+*  `KEYCLOAK_FAILURE_REDIRECT` (default `null`, uses the login route)
+
+Where to send the user when the SSO flow cannot be completed.
+
+*  `KEYCLOAK_THROW_CALLBACK_ERRORS` (default `false`)
+
+When `false` an error returned by the authorization endpoint (`access_denied`,
+`login_required`...) redirects the user with the error instead of throwing a
+`KeycloakCallbackException` (which renders a 500 page).
+
+### Local token validation
+
+*  `KEYCLOAK_VERIFY_SIGNATURE` (default `false`)
+
+Verify the JWT signature of the ID token (and of the access token when
+`use_userinfo` is disabled) with `KEYCLOAK_REALM_PUBLIC_KEY`. The package only
+checked `exp`, `iss` and `aud` before, so the `userinfo` endpoint was the only
+real validation. Enable it before disabling `userinfo`.
+
+*  `KEYCLOAK_USE_USERINFO` (default `true`)
+
+Set it to `false` to build the user profile from the ID token claims and stop
+calling the `userinfo` endpoint. Requires `KEYCLOAK_VERIFY_SIGNATURE`, the realm
+public key and the `email` + `profile` scopes:
+
+```php
+'scopes' => env('KEYCLOAK_SCOPES', 'openid email profile'),
+'use_userinfo' => false,
+'verify_signature' => true,
+```
 
 ## Laravel Auth
 
@@ -238,6 +320,16 @@ Route::group(['middleware' => 'keycloak-web'], function () {
 
 On session. We recommend implement the database driver if you have load balance.
 
+### How do I log the user out?
+
+Use the `keycloak.logout` route (RP initiated logout): it clears the session
+token and redirects to Keycloak's `end_session_endpoint`, so the SSO session is
+closed too.
+
+`Auth::logout()` is supported since 3.1.0 (it forgets the token and invalidates
+the Laravel session) but it does **not** close the Keycloak SSO session, which
+matters on shared computers: prefer the route.
+
 ### What's a state?
 
 State is a unique and non-guessable string used to mitigate CSRF attacks.
@@ -294,6 +386,21 @@ Just add the options you would like to `guzzle_options` array on `keycloak-web.p
     'verify' => false
 ]
 ```
+
+## Tests
+
+```bash
+composer install
+vendor/bin/phpunit
+```
+
+The suite covers the JWT signature verification, the state handling (multiple
+tabs and TTL), the profile cache and its degradation during an outage, the
+refresh token flow and the HTTP client options. It runs on PHP 8.1+ with
+PHPUnit 9.6/10.5 (see `.github/workflows/tests.yml`).
+
+Read [UPGRADING.md](UPGRADING.md) before upgrading from 3.0.x: three defaults
+change the behaviour (timeouts, profile cache, callback errors).
 
 ## Developers
 

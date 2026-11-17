@@ -2,6 +2,57 @@
 
 All notable changes to this project will be documented in this file.
 
+### [3.1.0] - Unreleased
+
+Hardening release. Everything is backwards compatible; the new options have
+safe defaults and can be tuned through the config file / environment.
+
+* HTTP client: default `timeout` (5s) and `connect_timeout` (3s), plus
+  conservative retries for `GET` requests (`cURL` errors 6/7/28/35/52/55/56 and
+  5xx). Requests to the token endpoint are never replayed.
+* User profile cached in the session (`profile_cache_ttl`), so the guard stops
+  calling the `userinfo` endpoint on every request. The cache survives an access
+  token rotation (refresh), so an outage right after a refresh does not log the
+  user out.
+* Graceful degradation (`profile_stale_ttl`): a Keycloak outage (network error,
+  5xx, unreachable discovery) no longer logs the user out. A `4xx` response still
+  invalidates the session, and an expired token is only tolerated when the
+  refresh actually failed because of the network.
+* The `keycloak.logout` route also invalidates the application session, not only
+  the SSO token (relevant on shared computers).
+* Token refresh: a network error keeps the session; only a rejected refresh
+  token (`invalid_grant`) forgets it. Refresh rejections are logged with the
+  HTTP status.
+* `KeycloakAccessToken::verifySignature()`: optional RS256/384/512 signature
+  verification with the realm public key, and a `leeway` for clock skew.
+  Previously only `exp`, `iss` and `aud` were checked.
+* Optional `use_userinfo = false`: build the profile from the ID token claims.
+* `KeycloakWebGuard::logout()` and `login()` implemented, so `Auth::logout()`
+  no longer throws `Call to undefined method ...::logout()`.
+* Authorization states: multiple concurrent states with TTL and a bounded list
+  (multiple tabs), `consumeState()` and a loop protection after
+  `max_state_failures`.
+* Callback: no longer logs the authorization `code` / `session_state` (live
+  credentials); errors returned by Keycloak redirect the user instead of
+  throwing a 500 page (`throw_callback_errors` to opt in to the old behaviour).
+* **Security: the exception logger no longer dumps the HTTP request object**,
+  which was writing the `Authorization: Bearer <access_token>` header into the
+  application log. Only the method, URI, status and a truncated body are logged.
+* **Security: the session id is regenerated after a successful callback** to
+  prevent session fixation.
+* `use_userinfo = false` without `verify_signature` falls back to `userinfo`
+  (and logs a warning) instead of trusting unsigned ID token claims.
+* `userinfo` subject is now checked against the ID token (before it was silently
+  ignored).
+* `validateState()` rejects non scalar input instead of casting it.
+* `base64UrlDecode()` padding fixed for irregular token lengths.
+* Log calls are resilient when the logger is not available.
+* The session persistence failure is logged instead of being swallowed.
+* The callback no longer loops to the identity provider when the authorization
+  code cannot be exchanged.
+* Added a PHPUnit suite (38 tests) and a GitHub Actions workflow. See
+  [UPGRADING.md](UPGRADING.md) for the three defaults that change the behaviour.
+
 ### [3.0.1] - 2022-09-28
 
 * Fix #79 (looping on KeycloakCan error). (props: @andrex47)

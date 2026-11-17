@@ -4,6 +4,11 @@ namespace Vizir\KeycloakWebGuard;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\ServerException;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Config;
@@ -78,8 +83,125 @@ class KeycloakWebGuardServiceProvider extends ServiceProvider
 
         // Bind for client data
         $this->app->when(KeycloakService::class)->needs(ClientInterface::class)->give(function() {
-            return new Client(Config::get('keycloak-web.guzzle_options', []));
+            return $this->buildHttpClient();
         });
+    }
+
+    /**
+     * Build the HTTP client used to talk to Keycloak
+     *
+     * The default client has no timeout at all, so a single hung connection to
+     * the identity provider could block a PHP worker until the process is
+     * killed. Safe defaults (timeout + connect_timeout + retries) are applied
+     * here and can be overridden with "keycloak-web.http" or the legacy
+     * "keycloak-web.guzzle_options".
+     *
+     * @return ClientInterface
+     */
+    protected function buildHttpClient()
+    {
+        $options = array_merge(
+            [
+                'timeout' => 5,
+                'connect_timeout' => 3,
+            ],
+            (array) Config::get('keycloak-web.http', []),
+            (array) Config::get('keycloak-web.guzzle_options', [])
+        );
+
+        $retries = (int) ($options['retries'] ?? 2);
+        $retryDelayMs = (int) ($options['retry_delay_ms'] ?? 200);
+
+        unset($options['retries'], $options['retry_delay_ms']);
+
+        if ($retries > 0) {
+            $options['handler'] = $this->buildHandlerStack(
+                $options['handler'] ?? null,
+                $retries,
+                $retryDelayMs
+            );
+        }
+
+        return new Client($options);
+    }
+
+    /**
+     * Build a handler stack with a conservative retry policy
+     *
+     * Only GET requests are retried: POST requests to the token endpoint carry
+     * single use authorization codes or rotating refresh tokens, so replaying
+     * them can invalidate the user session.
+     *
+     * @param  mixed $handler
+     * @param  int   $retries
+     * @param  int   $retryDelayMs
+     * @return HandlerStack
+     */
+    protected function buildHandlerStack($handler, $retries, $retryDelayMs)
+    {
+        $stack = $handler instanceof HandlerStack
+            ? $handler
+            : HandlerStack::create($handler ?: null);
+
+        $stack->push(Middleware::retry(
+            function ($retry, $request = null, $response = null, $exception = null) use ($retries) {
+                if ($retry >= $retries) {
+                    return false;
+                }
+
+                if (! $request || strtoupper($request->getMethod()) !== 'GET') {
+                    return false;
+                }
+
+                if ($response) {
+                    // Retry server side failures only (GET requests)
+                    return $response->getStatusCode() >= 500;
+                }
+
+                return $this->isTransientException($exception);
+            },
+            function ($retry) use ($retryDelayMs) {
+                return $retryDelayMs * 1000 * $retry;
+            }
+        ), 'keycloak_retry');
+
+        return $stack;
+    }
+
+    /**
+     * Determine if an exception is a transient network problem
+     *
+     * @param  mixed $exception
+     * @return bool
+     */
+    protected function isTransientException($exception)
+    {
+        if (empty($exception)) {
+            return false;
+        }
+
+        if ($exception instanceof ConnectException) {
+            return true;
+        }
+
+        if ($exception instanceof ServerException) {
+            return true;
+        }
+
+        if ($exception instanceof RequestException && method_exists($exception, 'getHandlerContext')) {
+            try {
+                $context = $exception->getHandlerContext();
+                $errno = (int) ($context['errno'] ?? 0);
+
+                if (in_array($errno, [6, 7, 28, 35, 52, 55, 56], true)) {
+                    return true;
+                }
+            } catch (\Throwable $e) {
+                // ignore and fall back to the message check
+            }
+        }
+
+        return (bool) preg_match('/cURL error (6|7|28|35|52|55|56)\b/', (string) $exception->getMessage());
     }
 
     /**
