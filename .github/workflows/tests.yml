@@ -22,8 +22,10 @@ jobs:
           php-version: ${{ matrix.php }}
           coverage: none
 
+      # A library must not ship a lock file: each PHP version of the matrix has
+      # to resolve the versions compatible with its own platform.
       - name: Install dependencies
-        run: composer install --prefer-dist --no-interaction --no-progress
+        run: composer update --prefer-dist --no-interaction --no-progress
 
       - name: Run tests
         run: vendor/bin/phpunit --no-coverage
